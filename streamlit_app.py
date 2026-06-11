@@ -1,3 +1,4 @@
+import hashlib
 import json
 import datetime
 import streamlit as st
@@ -11,6 +12,7 @@ for key, default in [
     ("messages", []),
     ("encourage_mode", "고민 해결"),
     ("story_genre", "소설"),
+    ("last_audio_hash", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -81,6 +83,7 @@ with st.sidebar:
         if st.button("🏠 처음으로", use_container_width=True):
             st.session_state.chatbot_type = None
             st.session_state.messages = []
+            st.session_state.last_audio_hash = None
             st.rerun()
 
     if st.session_state.messages:
@@ -112,6 +115,7 @@ with st.sidebar:
 
         if st.button("🗑️ 대화 초기화", use_container_width=True):
             st.session_state.messages = []
+            st.session_state.last_audio_hash = None
             st.rerun()
 
 # ── API 키 확인 ───────────────────────────────────────────
@@ -123,26 +127,60 @@ if not openai_api_key:
 client = OpenAI(api_key=openai_api_key)
 
 
+def send_message(system_prompt: str, user_text: str):
+    """메시지를 세션에 저장하고 AI 응답을 스트리밍한다."""
+    st.session_state.messages.append({"role": "user", "content": user_text})
+    with st.chat_message("user"):
+        st.markdown(user_text)
+
+    stream = client.chat.completions.create(
+        model=selected_model,
+        messages=[{"role": "system", "content": system_prompt}]
+        + [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
+        temperature=temperature,
+        stream=True,
+    )
+    with st.chat_message("assistant"):
+        response = st.write_stream(stream)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
+
 def run_chat(system_prompt: str, placeholder: str):
+    # 기존 대화 표시
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if prompt := st.chat_input(placeholder):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    # ── 음성 입력 ──────────────────────────────────────────
+    audio = st.audio_input("🎤 마이크로 말하기 (누르고 말한 뒤 다시 누르면 전송)")
 
-        stream = client.chat.completions.create(
-            model=selected_model,
-            messages=[{"role": "system", "content": system_prompt}]
-            + [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
-            temperature=temperature,
-            stream=True,
-        )
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+    if audio is not None:
+        audio_bytes = audio.read()
+        audio_hash = hashlib.md5(audio_bytes).hexdigest()
+
+        # 같은 녹음을 두 번 처리하지 않는다
+        if audio_hash != st.session_state.last_audio_hash:
+            st.session_state.last_audio_hash = audio_hash
+
+            with st.spinner("🎤 음성을 텍스트로 변환 중..."):
+                try:
+                    transcript = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=("audio.wav", audio_bytes, "audio/wav"),
+                        language="ko",
+                    )
+                    voice_text = transcript.text.strip()
+                except Exception as e:
+                    st.error(f"음성 변환 실패: {e}")
+                    voice_text = ""
+
+            if voice_text:
+                st.info(f"🎤 인식된 텍스트: **{voice_text}**")
+                send_message(system_prompt, f"🎤 {voice_text}")
+
+    # ── 텍스트 입력 ────────────────────────────────────────
+    if prompt := st.chat_input(placeholder):
+        send_message(system_prompt, prompt)
 
 
 # ── 메인 화면 ─────────────────────────────────────────────
@@ -162,6 +200,7 @@ if st.session_state.chatbot_type is None:
             if st.button("💪 할 수 있다 시작", use_container_width=True, type="primary"):
                 st.session_state.chatbot_type = "encourage"
                 st.session_state.messages = []
+                st.session_state.last_audio_hash = None
                 st.rerun()
 
     with col2:
@@ -173,6 +212,7 @@ if st.session_state.chatbot_type is None:
             if st.button("📖 이야기 시작", use_container_width=True, type="primary"):
                 st.session_state.chatbot_type = "story"
                 st.session_state.messages = []
+                st.session_state.last_audio_hash = None
                 st.rerun()
 
 # ── 할 수 있다 챗봇 ───────────────────────────────────────
@@ -188,6 +228,7 @@ elif st.session_state.chatbot_type == "encourage":
                 if st.session_state.encourage_mode != mode:
                     st.session_state.encourage_mode = mode
                     st.session_state.messages = []
+                    st.session_state.last_audio_hash = None
                     st.rerun()
 
     st.caption(f"현재 모드: **{st.session_state.encourage_mode}**")
@@ -211,11 +252,11 @@ elif st.session_state.chatbot_type == "story":
                 if st.session_state.story_genre != genre:
                     st.session_state.story_genre = genre
                     st.session_state.messages = []
+                    st.session_state.last_audio_hash = None
                     st.rerun()
 
     st.caption(f"현재 장르: **{st.session_state.story_genre}**")
 
-    # 책으로 만들기
     ai_texts = [m["content"] for m in st.session_state.messages if m["role"] == "assistant"]
     if ai_texts:
         now = datetime.datetime.now().strftime("%Y년 %m월 %d일")
