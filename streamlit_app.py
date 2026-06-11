@@ -7,7 +7,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
 
-st.set_page_config(page_title="AI 챗봇", page_icon="💬", layout="centered")
+st.set_page_config(page_title="나의 이야기로 글 쓰기", page_icon="📖", layout="centered")
 
 # ── CSS ───────────────────────────────────────────────────
 st.markdown("""
@@ -137,6 +137,9 @@ DEFAULTS = {
     "writing_genre": None,
     "written_content": None,
     "image_data": None,
+    "lyrics_content": None,
+    "lyrics_style": "",
+    "music_data": None,
     "voice_mode": False,
     "voice_counter": 0,
     "last_audio_hash": None,
@@ -162,6 +165,12 @@ IMAGE_STYLE = {
     "소설": "dramatic narrative book illustration, cinematic lighting",
     "수필": "soft watercolor painting, peaceful warm tones",
     "시":   "abstract poetic art, dreamy surrealism, emotional colors",
+}
+
+MUSIC_GENRE_STYLE = {
+    "소설": "웅장하고 서사적인 영화음악 스타일 발라드, 오케스트라와 피아노",
+    "수필": "잔잔하고 감성적인 어쿠스틱 발라드, 기타와 피아노",
+    "시":   "서정적이고 몽환적인 팝 발라드, 감성적인 멜로디",
 }
 
 WAVEFORM_HTML = """
@@ -239,6 +248,108 @@ def generate_image(genre: str, text: str) -> bytes:
             return r.read()
 
 
+def generate_lyrics(genre: str, written_text: str) -> tuple:
+    """GPT로 가사와 음악 스타일 설명을 생성한다."""
+    style_hint = MUSIC_GENRE_STYLE.get(genre, "감성적인 한국 발라드")
+    system = f"""당신은 한국의 전문 가사 작가입니다.
+아래 {genre} 내용을 바탕으로 한국어 노래 가사를 써주세요.
+음악 스타일: {style_hint}
+
+다음 형식을 반드시 지켜주세요:
+
+[인트로]
+(짧은 도입 가사)
+
+[버스 1]
+(이야기의 시작과 감정)
+
+[코러스]
+(핵심 메시지 - 반복될 부분, 강렬하게)
+
+[버스 2]
+(이야기의 전개와 심화)
+
+[코러스]
+(핵심 메시지 반복)
+
+[브릿지]
+(감정의 절정, 전환)
+
+[코러스]
+(마지막 코러스)
+
+[아웃트로]
+(여운이 남는 마무리)
+
+---
+[음악 스타일]
+장르/분위기/템포/악기를 한 줄로 설명"""
+
+    with st.spinner("🎵 가사 작성 중..."):
+        resp = client.chat.completions.create(
+            model=selected_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"이 {genre} 내용으로 가사를 써주세요:\n\n{written_text[:2000]}"},
+            ],
+            temperature=0.95,
+        )
+    full = resp.choices[0].message.content
+
+    if "---" in full and "[음악 스타일]" in full:
+        parts = full.split("---")
+        lyrics = parts[0].strip()
+        style = parts[1].replace("[음악 스타일]", "").strip()
+    else:
+        lyrics = full
+        style = style_hint
+    return lyrics, style
+
+
+def generate_music_replicate(prompt: str, replicate_key: str) -> bytes:
+    """Replicate MusicGen으로 배경음악을 생성한다 (Prefer: wait 동기 방식)."""
+    import time
+    headers = {
+        "Authorization": f"Bearer {replicate_key}",
+        "Content-Type": "application/json",
+    }
+    payload = json.dumps({
+        "version": "671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
+        "input": {
+            "prompt": prompt,
+            "duration": 20,
+            "model_version": "stereo-large",
+            "output_format": "mp3",
+        },
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.replicate.com/v1/predictions",
+        data=payload, headers=headers, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        prediction = json.loads(r.read())
+
+    get_url = prediction["urls"]["get"]
+    for _ in range(90):
+        time.sleep(2)
+        req2 = urllib.request.Request(
+            get_url,
+            headers={"Authorization": f"Bearer {replicate_key}"},
+        )
+        with urllib.request.urlopen(req2, timeout=15) as r:
+            result = json.loads(r.read())
+        if result["status"] == "succeeded":
+            audio_url = result["output"]
+            if isinstance(audio_url, list):
+                audio_url = audio_url[0]
+            with urllib.request.urlopen(audio_url) as r:
+                return r.read()
+        if result["status"] == "failed":
+            raise Exception(result.get("error", "음악 생성 실패"))
+    raise Exception("음악 생성 시간 초과 (3분)")
+
+
 # ── 사이드바 ──────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ 설정")
@@ -246,6 +357,13 @@ with st.sidebar:
     st.divider()
     selected_model = st.selectbox("모델", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"])
     temperature = st.slider("창의성", 0.0, 2.0, 0.7, 0.05)
+    st.divider()
+    st.markdown("**🎵 음악 생성 (선택)**")
+    replicate_key = st.text_input(
+        "Replicate API Key",
+        type="password",
+        help="배경음악 파일 생성용. replicate.com에서 무료 발급. 없으면 가사만 생성됩니다.",
+    )
     st.divider()
 
     if st.session_state.messages:
@@ -273,14 +391,14 @@ with st.sidebar:
 
 # ── API 키 확인 ───────────────────────────────────────────
 if not openai_api_key:
-    st.title("💬 AI 챗봇")
+    st.title("📖 나의 이야기로 글 쓰기")
     st.info("사이드바에 OpenAI API 키를 입력하세요.", icon="🗝️")
     st.stop()
 
 client = OpenAI(api_key=openai_api_key)
 
 # ── 헤더 & 모드 버튼 ──────────────────────────────────────
-st.title("💬 AI 챗봇")
+st.title("📖 나의 이야기로 글 쓰기")
 
 MODES = [("🤔 고민 해결","고민 해결"),("🌟 칭찬 하기","칭찬 하기"),
          ("☀️ 긍정 반응","긍정 반응"),("✏️ 글 쓰기 계속","글 쓰기 계속")]
@@ -418,6 +536,9 @@ if st.session_state.messages:
                          type="primary" if active else "secondary", key=f"genre_{genre}"):
                 st.session_state.writing_genre = genre
                 st.session_state.image_data = None
+                st.session_state.lyrics_content = None
+                st.session_state.lyrics_style = ""
+                st.session_state.music_data = None
                 st.session_state.written_content = generate_writing(genre)
                 st.rerun()
 
@@ -426,8 +547,8 @@ if st.session_state.messages:
         with st.expander(f"📄 {g}", expanded=True):
             st.markdown(st.session_state.written_content)
 
-        # 버튼 행: 다운로드 | 그림 생성 | 글 쓰기 계속 | 대화 초기화
-        a1, a2, a3, a4 = st.columns(4)
+        # 버튼 행: 다운로드 | 그림 생성 | 음악 만들기 | 글 쓰기 계속 | 대화 초기화
+        a1, a2, a3, a4, a5 = st.columns(5)
         with a1:
             st.download_button(f"📥 {g} 다운로드", st.session_state.written_content,
                                f"나의_{g}.txt", use_container_width=True)
@@ -439,10 +560,27 @@ if st.session_state.messages:
                     st.error(f"그림 생성 실패: {e}")
                 st.rerun()
         with a3:
+            if st.button("🎵 음악 만들기", use_container_width=True):
+                with st.spinner("🎵 가사 생성 중..."):
+                    try:
+                        lyrics, style = generate_lyrics(g, st.session_state.written_content)
+                        st.session_state.lyrics_content = lyrics
+                        st.session_state.lyrics_style = style
+                    except Exception as e:
+                        st.error(f"가사 생성 실패: {e}")
+                        lyrics = None
+                if lyrics and replicate_key:
+                    with st.spinner("🎶 음악 생성 중... (1~2분 소요)"):
+                        try:
+                            st.session_state.music_data = generate_music_replicate(style, replicate_key)
+                        except Exception as e:
+                            st.error(f"음악 생성 실패: {e}")
+                st.rerun()
+        with a4:
             if st.button("✏️ 글 쓰기 계속", use_container_width=True, type="primary"):
                 st.session_state.chat_mode = "글 쓰기 계속"
                 st.rerun()
-        with a4:
+        with a5:
             if st.button("🗑️ 대화 초기화", use_container_width=True):
                 st.session_state.messages = []
                 st.session_state.text_key += 1
@@ -454,3 +592,16 @@ if st.session_state.messages:
             st.download_button("📥 이미지 다운로드", st.session_state.image_data,
                                f"나의_{g}_그림.png", "image/png",
                                use_container_width=True, key="dl_img")
+
+        if st.session_state.lyrics_content:
+            with st.expander("🎵 가사", expanded=True):
+                st.markdown(st.session_state.lyrics_content)
+                if st.session_state.lyrics_style:
+                    st.caption(f"음악 스타일: {st.session_state.lyrics_style}")
+            st.download_button("📥 가사 다운로드", st.session_state.lyrics_content,
+                               f"나의_{g}_가사.txt", use_container_width=True, key="dl_lyrics")
+            if st.session_state.music_data:
+                st.audio(st.session_state.music_data, format="audio/mp3")
+                st.download_button("📥 음악 다운로드", st.session_state.music_data,
+                                   f"나의_{g}_음악.mp3", "audio/mp3",
+                                   use_container_width=True, key="dl_music")
