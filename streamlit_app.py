@@ -7,7 +7,7 @@ from openai import OpenAI
 
 st.set_page_config(page_title="AI 챗봇", page_icon="💬", layout="centered")
 
-# ── Session state 초기화 ──────────────────────────────────
+# ── Session state ─────────────────────────────────────────
 DEFAULTS = {
     "chat_mode": "고민 해결",
     "messages": [],
@@ -20,7 +20,7 @@ for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ── 프롬프트 정의 ─────────────────────────────────────────
+# ── 프롬프트 ──────────────────────────────────────────────
 CHAT_PROMPTS = {
     "고민 해결": (
         "당신은 따뜻하고 지혜로운 상담사입니다. "
@@ -30,14 +30,13 @@ CHAT_PROMPTS = {
     ),
     "칭찬 하기": (
         "당신은 사용자의 가장 열렬한 응원자입니다. "
-        "사용자가 말하는 것에서 긍정적인 면과 칭찬할 점을 찾아 구체적으로 칭찬하고 격려해주세요. "
-        "진심이 담긴 칭찬으로 자존감을 높여주세요. "
+        "사용자가 말하는 것에서 긍정적인 면을 찾아 구체적으로 칭찬하고 격려해주세요. "
         "한국어로 밝고 따뜻하게 대화해주세요."
     ),
     "긍정 반응": (
         "당신은 긍정의 에너지로 가득 찬 친구입니다. "
         "어떤 상황에서도 밝고 희망적인 면을 찾아 사용자를 격려해주세요. "
-        "한국어로 활기차고 따뜻하게 대화해주세요."
+        "한국어로 활기차게 대화해주세요."
     ),
     "글 쓰기 계속": (
         "당신은 창의적인 글쓰기 파트너입니다. "
@@ -49,13 +48,13 @@ CHAT_PROMPTS = {
 WRITING_PROMPTS = {
     "소설": (
         "아래 대화 내용을 바탕으로 흥미롭고 감동적인 소설을 써주세요. "
-        "생생한 묘사, 입체적인 인물, 긴장감 있는 전개로 독자를 끌어당기는 이야기를 만들어주세요. "
-        "한국어로 작성하고 500자 이상으로 써주세요."
+        "생생한 묘사, 입체적인 인물, 긴장감 있는 전개로 이야기를 만들어주세요. "
+        "한국어로 500자 이상 작성해주세요."
     ),
     "수필": (
         "아래 대화 내용을 바탕으로 아름답고 진솔한 수필을 써주세요. "
         "일상에서 발견하는 소중한 의미와 감동을 섬세한 문체로 담아주세요. "
-        "한국어로 작성하고 400자 이상으로 써주세요."
+        "한국어로 400자 이상 작성해주세요."
     ),
     "시": (
         "아래 대화 내용을 바탕으로 감동적인 시를 써주세요. "
@@ -65,80 +64,83 @@ WRITING_PROMPTS = {
 }
 
 IMAGE_STYLE = {
-    "소설": "dramatic narrative book illustration, cinematic lighting, detailed scene, storytelling art",
-    "수필": "soft watercolor painting, peaceful and reflective atmosphere, warm gentle tones",
-    "시": "abstract poetic art, dreamy surrealism, emotional colors, artistic and lyrical",
+    "소설": "dramatic narrative book illustration, cinematic lighting, detailed scene",
+    "수필": "soft watercolor painting, peaceful atmosphere, warm tones",
+    "시": "abstract poetic art, dreamy surrealism, emotional and artistic",
 }
 
 
-def get_chat_system(mode: str) -> str:
-    system = CHAT_PROMPTS[mode]
+def get_system(mode: str) -> str:
+    s = CHAT_PROMPTS[mode]
     if mode == "글 쓰기 계속" and st.session_state.written_content:
-        system += f"\n\n앞서 쓴 글:\n{st.session_state.written_content}"
-    return system
+        s += f"\n\n앞서 쓴 글:\n{st.session_state.written_content}"
+    return s
 
 
-def stream_response(system: str):
-    """AI 응답을 스트리밍하고 세션에 저장한다."""
-    stream = client.chat.completions.create(
+def call_ai(system: str, messages: list) -> str:
+    """AI 응답을 반환한다 (스트리밍 없이)."""
+    resp = client.chat.completions.create(
         model=selected_model,
         messages=[{"role": "system", "content": system}]
-        + [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
+        + [{"role": m["role"], "content": m["content"]} for m in messages],
         temperature=temperature,
-        stream=True,
     )
-    with st.chat_message("assistant"):
-        response = st.write_stream(stream)
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    return resp.choices[0].message.content
 
 
-def generate_writing(genre: str):
-    """대화 내용을 바탕으로 글을 생성한다."""
+def send_message(user_text: str):
+    """사용자 메시지를 추가하고 AI 응답을 받는다."""
+    st.session_state.messages.append({"role": "user", "content": user_text})
+    with st.spinner("AI 응답 중..."):
+        ai_text = call_ai(get_system(st.session_state.chat_mode), st.session_state.messages)
+    st.session_state.messages.append({"role": "assistant", "content": ai_text})
+    st.rerun()
+
+
+def generate_writing(genre: str) -> str:
     system = WRITING_PROMPTS[genre]
     if st.session_state.chat_mode == "글 쓰기 계속" and st.session_state.written_content:
         system += (
-            f"\n\n앞서 쓴 {genre} 내용:\n{st.session_state.written_content}\n\n"
-            "위의 내용에 자연스럽게 이어서 계속 써주세요."
+            f"\n\n앞서 쓴 {genre}:\n{st.session_state.written_content}\n\n"
+            "위 내용에 자연스럽게 이어서 계속 써주세요."
         )
-    messages = [{"role": "system", "content": system}]
-    messages += [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
-    messages.append({"role": "user", "content": f"대화 내용을 바탕으로 {genre}를 써주세요."})
+    msgs = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
+    msgs.append({"role": "user", "content": f"대화 내용을 바탕으로 {genre}를 써주세요."})
     with st.spinner(f"📝 {genre} 작성 중..."):
         resp = client.chat.completions.create(
-            model=selected_model, messages=messages, temperature=temperature
+            model=selected_model,
+            messages=[{"role": "system", "content": system}] + msgs,
+            temperature=temperature,
         )
     return resp.choices[0].message.content
 
 
-def generate_image(genre: str, written_text: str) -> bytes:
-    """글의 분위기에 맞는 이미지를 DALL-E 3로 생성한다."""
-    # 글 내용 → 영어 이미지 프롬프트 생성
-    prompt_resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "다음 한국어 글의 핵심 장면과 분위기를 DALL-E 이미지 프롬프트로 영어 60단어 이내로 작성해주세요. "
-                    f"스타일: {IMAGE_STYLE[genre]}"
-                ),
-            },
-            {"role": "user", "content": written_text[:1200]},
-        ],
-        max_tokens=120,
-    )
-    image_prompt = prompt_resp.choices[0].message.content
-
-    img_resp = client.images.generate(
-        model="dall-e-3",
-        prompt=image_prompt,
-        size="1024x1024",
-        quality="standard",
-        n=1,
-    )
-    image_url = img_resp.data[0].url
-    with urllib.request.urlopen(image_url) as r:
-        return r.read()
+def generate_image(genre: str, text: str) -> bytes:
+    with st.spinner("🎨 그림 그리는 중..."):
+        prompt_resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "다음 한국어 글의 핵심 장면과 분위기를 DALL-E 이미지 프롬프트로 "
+                        f"영어 60단어 이내로 작성해주세요. 스타일: {IMAGE_STYLE[genre]}"
+                    ),
+                },
+                {"role": "user", "content": text[:1200]},
+            ],
+            max_tokens=120,
+        )
+        image_prompt = prompt_resp.choices[0].message.content
+        img_resp = client.images.generate(
+            model="dall-e-3",
+            prompt=image_prompt,
+            size="1024x1024",
+            quality="standard",
+            n=1,
+        )
+        with urllib.request.urlopen(img_resp.data[0].url) as r:
+            return r.read()
 
 
 # ── 사이드바 ──────────────────────────────────────────────
@@ -149,8 +151,7 @@ with st.sidebar:
 
     selected_model = st.selectbox(
         "모델 선택",
-        options=["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
-        index=0,
+        ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
         help="gpt-4o-mini: 빠르고 저렴 / gpt-4o: 최고 성능",
     )
     temperature = st.slider("창의성 (Temperature)", 0.0, 2.0, 0.7, 0.05)
@@ -201,7 +202,7 @@ if not openai_api_key:
 
 client = OpenAI(api_key=openai_api_key)
 
-# ── 메인 UI ───────────────────────────────────────────────
+# ── 헤더 ─────────────────────────────────────────────────
 st.title("💬 AI 챗봇")
 
 # 모드 버튼
@@ -214,13 +215,12 @@ MODES = [
 mode_cols = st.columns(len(MODES))
 for col, (label, mode) in zip(mode_cols, MODES):
     with col:
-        btn_type = "primary" if st.session_state.chat_mode == mode else "secondary"
-        if st.button(label, use_container_width=True, type=btn_type, key=f"mode_{mode}"):
-            if st.session_state.chat_mode != mode:
-                prev = st.session_state.chat_mode
+        is_active = st.session_state.chat_mode == mode
+        if st.button(label, use_container_width=True,
+                     type="primary" if is_active else "secondary",
+                     key=f"mode_{mode}"):
+            if not is_active:
                 st.session_state.chat_mode = mode
-                # 글 쓰기 계속으로 진입: 대화·글 유지
-                # 다른 모드로 전환: 초기화
                 if mode != "글 쓰기 계속":
                     st.session_state.messages = []
                     st.session_state.written_content = None
@@ -230,28 +230,53 @@ for col, (label, mode) in zip(mode_cols, MODES):
 
 st.caption(f"현재 모드: **{st.session_state.chat_mode}**")
 
-# 글 쓰기 계속 모드: 이전 글 열람 & 다운로드
+# 글 쓰기 계속: 이전 글 표시
 if st.session_state.chat_mode == "글 쓰기 계속" and st.session_state.written_content:
-    genre_label = st.session_state.writing_genre or "글"
-    with st.expander(f"📄 이전에 쓴 {genre_label} 보기 / 다운로드", expanded=False):
+    g = st.session_state.writing_genre or "글"
+    with st.expander(f"📄 이전에 쓴 {g} 보기 / 다운로드", expanded=False):
         st.markdown(st.session_state.written_content)
         st.download_button(
-            f"📥 {genre_label} 다운로드",
+            f"📥 {g} 다운로드",
             data=st.session_state.written_content,
-            file_name=f"나의_{genre_label}.txt",
+            file_name=f"나의_{g}.txt",
             mime="text/plain",
             key="prev_dl",
         )
 
 st.divider()
 
-# 대화 표시
+# ── 대화 메시지 표시 ──────────────────────────────────────
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# ── 음성 입력 ─────────────────────────────────────────────
-audio = st.audio_input("🎤 마이크로 말하기 (누르고 말한 뒤 다시 누르면 전송)")
+# ── 입력 영역: 텍스트 + 음성 나란히 ──────────────────────
+st.write("")  # 메시지와 입력창 사이 여백
+
+text_col, voice_col = st.columns([3, 1])
+
+with text_col:
+    with st.form("chat_form", clear_on_submit=True, border=False):
+        user_input = st.text_input(
+            "메시지 입력",
+            placeholder="메시지를 입력하세요... (Enter 또는 전송 버튼)",
+            label_visibility="collapsed",
+        )
+        submitted = st.form_submit_button(
+            "전송 ▶",
+            use_container_width=True,
+            type="primary",
+        )
+
+with voice_col:
+    st.markdown("**🎤 음성 입력**")
+    audio = st.audio_input("", label_visibility="collapsed")
+
+# 텍스트 전송 처리
+if submitted and user_input.strip():
+    send_message(user_input.strip())
+
+# 음성 전송 처리
 if audio is not None:
     audio_bytes = audio.read()
     audio_hash = hashlib.md5(audio_bytes).hexdigest()
@@ -270,10 +295,9 @@ if audio is not None:
                 voice_text = ""
         if voice_text:
             st.info(f"🎤 인식된 텍스트: **{voice_text}**")
-            st.session_state.messages.append({"role": "user", "content": f"🎤 {voice_text}"})
-            with st.chat_message("user"):
-                st.markdown(f"🎤 {voice_text}")
-            stream_response(get_chat_system(st.session_state.chat_mode))
+            send_message(f"🎤 {voice_text}")
+
+st.divider()
 
 # ── 글로 만들기 섹션 ──────────────────────────────────────
 if st.session_state.messages:
@@ -281,12 +305,17 @@ if st.session_state.messages:
     st.caption("대화 내용을 바탕으로 원하는 형식의 글을 써드립니다.")
 
     g_cols = st.columns(3)
-    for col, (label, genre) in zip(g_cols, [("📚 소설", "소설"), ("✍️ 수필", "수필"), ("🎵 시", "시")]):
+    for col, (label, genre) in zip(
+        g_cols, [("📚 소설", "소설"), ("✍️ 수필", "수필"), ("🎵 시", "시")]
+    ):
         with col:
             is_active = st.session_state.writing_genre == genre
-            if st.button(label, use_container_width=True,
-                         type="primary" if is_active else "secondary",
-                         key=f"genre_{genre}"):
+            if st.button(
+                label,
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+                key=f"genre_{genre}",
+            ):
                 st.session_state.writing_genre = genre
                 st.session_state.image_data = None
                 st.session_state.written_content = generate_writing(genre)
@@ -298,9 +327,9 @@ if st.session_state.messages:
         with st.expander(f"📄 {g}", expanded=True):
             st.markdown(st.session_state.written_content)
 
-        act_cols = st.columns(3)
+        act1, act2, act3 = st.columns(3)
 
-        with act_cols[0]:
+        with act1:
             st.download_button(
                 f"📥 {g} 다운로드",
                 data=st.session_state.written_content,
@@ -309,23 +338,28 @@ if st.session_state.messages:
                 use_container_width=True,
             )
 
-        with act_cols[1]:
-            if st.button("🖼️ 그림 생성", use_container_width=True, key="gen_image"):
-                with st.spinner("🎨 그림을 그리는 중..."):
-                    try:
-                        st.session_state.image_data = generate_image(g, st.session_state.written_content)
-                    except Exception as e:
-                        st.error(f"그림 생성 실패: {e}")
+        with act2:
+            if st.button("🖼️ 그림 생성", use_container_width=True):
+                try:
+                    st.session_state.image_data = generate_image(
+                        g, st.session_state.written_content
+                    )
+                except Exception as e:
+                    st.error(f"그림 생성 실패: {e}")
                 st.rerun()
 
-        with act_cols[2]:
-            if st.button("✏️ 글 쓰기 계속", use_container_width=True, type="primary", key="continue_write"):
+        with act3:
+            if st.button("✏️ 글 쓰기 계속", use_container_width=True, type="primary"):
                 st.session_state.chat_mode = "글 쓰기 계속"
                 st.rerun()
 
-        # 생성된 이미지 표시
+        # 생성된 이미지
         if st.session_state.image_data:
-            st.image(st.session_state.image_data, caption=f"{g} 삽화", use_container_width=True)
+            st.image(
+                st.session_state.image_data,
+                caption=f"{g} 삽화",
+                use_container_width=True,
+            )
             st.download_button(
                 "📥 이미지 다운로드",
                 data=st.session_state.image_data,
@@ -334,10 +368,3 @@ if st.session_state.messages:
                 use_container_width=True,
                 key="dl_image",
             )
-
-# ── 텍스트 입력 ───────────────────────────────────────────
-if prompt := st.chat_input("무엇이든 말해보세요..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    stream_response(get_chat_system(st.session_state.chat_mode))
